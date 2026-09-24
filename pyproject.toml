@@ -1,0 +1,27 @@
+[project]
+name = "football-agent"
+version = "0.1.0"
+description = "Agente conversacional de fútbol con tools (RAG, API y cálculo) desplegado en Azure"
+readme = "README.md"
+authors = [
+    { name = "christianpovis", email = "163607405+CRPA22@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+football-agent = "football_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.168.1",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.8",
+]
