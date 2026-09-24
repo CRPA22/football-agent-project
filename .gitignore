@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Cachés de herramientas
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Configuración local (nunca se sube)
+.env
+.env.*
+!.env.example
+
+# Datos de emuladores locales
+.azurite/
+
+# Editores y sistema operativo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+Thumbs.db
+.DS_Store
