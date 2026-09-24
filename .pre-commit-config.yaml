@@ -1,0 +1,34 @@
+repos:
+  # Checks genéricos de higiene de archivos
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace       # borra espacios al final de las líneas
+      - id: end-of-file-fixer         # asegura un salto de línea al final del archivo
+      - id: check-yaml                # YAML válido (los workflows de CI lo serán)
+      - id: check-toml                # TOML válido (pyproject.toml)
+      - id: check-merge-conflict      # detecta marcas <<<<<<< olvidadas
+      - id: check-added-large-files   # evita subir archivos grandes por error
+      - id: detect-private-key        # bloquea claves privadas antes de que lleguen a GitHub
+
+  # Herramientas del proyecto: usan las versiones exactas del uv.lock
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
