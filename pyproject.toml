@@ -25,3 +25,35 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.8",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle: errores y estilo básico
+    "F",        # pyflakes: variables sin usar, imports rotos
+    "I",        # isort: orden de los imports
+    "B",        # bugbear: patrones que suelen ser bugs
+    "UP",       # pyupgrade: sintaxis moderna de Python
+    "SIM",      # simplificaciones de código
+    "N",        # convenciones de nombres (PEP 8)
+    "S",        # bandit: problemas de seguridad
+    "ASYNC",    # errores comunes en código async
+    "RUF",      # reglas propias de ruff
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # en tests, assert es lo normal
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
