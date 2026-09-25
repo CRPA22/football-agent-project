@@ -1,0 +1,38 @@
+name: CI
+
+on:
+    pull_request:
+        branches: [master]
+    push:
+        branches: [master]
+
+permissions:
+    contents: read
+
+concurrency:
+    group:  ci-${{ github.ref}}
+    cancel-in-progress: true
+
+jobs:
+    check:
+        name: Lint, tipos y tests
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+
+        steps:
+            - name: Descargar el codigo
+              uses:  actions/checkout@v5
+
+            - name: Instalar uv
+              uses: astral-sh/seteup-uv@v6
+              with:
+                enable-cache: true
+
+            - name: Instalar just
+              uses: extractions/setup-just@v3
+
+            - name: Instalar dependencias
+              run: uv sync --locked
+
+            - name: Lint, tipos y tests
+              run: just check
