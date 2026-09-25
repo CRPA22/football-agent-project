@@ -16,20 +16,20 @@ concurrency:
 jobs:
     check:
         name: Lint, tipos y tests
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         timeout-minutes: 10
 
         steps:
             - name: Descargar el codigo
-              uses:  actions/checkout@v5
+              uses:  actions/checkout@v7
 
             - name: Instalar uv
-              uses: astral-sh/setup-uv@v6
+              uses: astral-sh/setup-uv@v10
               with:
                 enable-cache: true
 
             - name: Instalar just
-              uses: extractions/setup-just@v3
+              uses: extractions/setup-just@v4
 
             - name: Instalar dependencias
               run: uv sync --locked
