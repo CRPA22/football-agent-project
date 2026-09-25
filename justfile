@@ -29,3 +29,7 @@ test *args:
 
 # Todo lo que valida CI: lint, tipos y tests
 check: lint typecheck test
+
+# Registra los resource providers de Azure (una vez por suscripción)
+bootstrap-providers:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap/register-providers.ps1
