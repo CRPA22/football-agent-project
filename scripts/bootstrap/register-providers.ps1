@@ -1,4 +1,5 @@
 <#
+
 .SYNOPSIS
     Registra en la suscripción activa los resource providers que usa el proyecto.
 
@@ -10,6 +11,7 @@
     just bootstrap-providers
 #>
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $providers = @(
     'Microsoft.App',                  # Container Apps y Jobs
