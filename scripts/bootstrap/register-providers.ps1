@@ -1,4 +1,4 @@
-<#
+﻿<#
 
 .SYNOPSIS
     Registra en la suscripción activa los resource providers que usa el proyecto.
@@ -11,7 +11,9 @@
     just bootstrap-providers
 #>
 $ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+# az.cmd ejecuta Python en modo aislado (-I) y escribe en la codificación ANSI de Windows:
+# leemos su salida con esa misma codificación para que las tildes se vean bien.
+[Console]::OutputEncoding = [System.Text.Encoding]::Default  # az está hecho en Python: que escriba en UTF-8
 
 $providers = @(
     'Microsoft.App',                  # Container Apps y Jobs
