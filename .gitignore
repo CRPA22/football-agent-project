@@ -22,6 +22,21 @@ htmlcov/
 # Datos de emuladores locales
 .azurite/
 
+# Terraform (el estado vive en Azure Storage, nunca en el repo)
+# Ojo: .terraform.lock.hcl SÍ se sube: fija las versiones exactas de los providers
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
 # Editores y sistema operativo
 .idea/
 .vscode/*
