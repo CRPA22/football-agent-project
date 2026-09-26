@@ -33,3 +33,7 @@ check: lint typecheck test
 # Registra los resource providers de Azure (una vez por suscripción)
 bootstrap-providers:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap/register-providers.ps1
+
+# Crea el backend del estado de Terraform (una vez por suscripción)
+bootstrap-tfstate:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap/create-tfstate-backend.ps1
