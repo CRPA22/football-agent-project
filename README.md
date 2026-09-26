@@ -32,7 +32,8 @@ La orquestación la gestiona el servicio de Azure. Tu API es solo un cliente del
 | Entornos | Solo **prod**, efímero: se crea para cada sesión de práctica y se destruye al terminar |
 | Pruebas antes de prod | Local (tests + emuladores) y gates de CI con evaluaciones del agente |
 | Autenticación | Managed Identity + RBAC; el único secreto (API key de football-data.org) vive en Key Vault |
-| IaC | Bicep |
+| IaC | Terraform, con el estado remoto en Azure Storage |
+| Región y modelos | `eastus`, GlobalStandard: `gpt-4.1-mini` y `text-embedding-3-small` |
 | CI/CD | GitHub Actions con OIDC (sin secretos de Azure en GitHub) |
 | Registro de imágenes | ACR Basic efímero (dentro de prod) |
 | Presupuesto | ~5–7 USD/mes |
@@ -41,6 +42,7 @@ La orquestación la gestiona el servicio de Azure. Tu API es solo un cliente del
 
 | Resource group | Vida | Contenido |
 |---|---|---|
+| `rg-football-tfstate` | Permanente | Storage Account con el estado de Terraform (creada por un script de bootstrap) |
 | `rg-football-shared` | Permanente | Key Vault, Log Analytics + App Insights, Managed Identities, budget |
 | `rg-football-devsvc` | Permanente, sin cómputo | Azure OpenAI + AI Search Free, usados en local y en las evaluaciones de CI |
 | `rg-football-prod` | **Efímero** | VNet, private endpoints, ACR Basic, Azure OpenAI, AI Search Basic, Cosmos DB, Storage, Container Apps + job de ingesta, Content Safety |
@@ -60,15 +62,15 @@ El detalle técnico (stack, diagramas, red, identidades, fases) está en [PLAN.m
 
 | Workflow | Cuándo corre | Qué hace |
 |---|---|---|
-| `ci.yml` | En cada PR | Lint, tipos, tests, validación + `what-if` de Bicep, build de la imagen, evaluaciones del agente |
+| `ci.yml` | En cada PR | Lint, tipos, tests, Terraform (`fmt`, `validate`, `tflint` y `plan`), build de la imagen, evaluaciones del agente |
 | `cd.yml` | Push a `master` | Construye y sube la imagen (etiquetada con el SHA). Si prod está encendido, despliega con canary, corre smoke tests y promueve o hace rollback |
-| `prod-up.yml` | Manual | Crea la infraestructura de prod, corre la ingesta y despliega la última imagen |
-| `prod-down.yml` | Manual y cada noche | Destruye prod y purga los recursos con soft-delete |
+| `prod-up.yml` | Manual | `terraform apply` de prod, corre la ingesta y despliega la última imagen |
+| `prod-down.yml` | Manual y cada noche | `terraform destroy` de prod, purgando los recursos con soft-delete |
 
 ## Plan (Versión 1)
 
-- [ ] **Fase 0: fundamentos.** Estructura del repo, `uv`, ruff, mypy, pre-commit, convenciones de nombres y tags, ADRs.
-- [ ] **Fase 1: walking skeleton.** Bicep de `shared` y `devsvc`, agente de Semantic Kernel sin tools detrás de FastAPI, `docker compose`, OpenTelemetry y los workflows de CI/CD. El primer `prod-up` deja el agente vivo en Azure.
+- [x] **Fase 0: fundamentos.** Estructura del repo, `uv`, ruff, mypy, pre-commit, `justfile`, ADRs, CI, Dependabot y protección de `master`.
+- [ ] **Fase 1: walking skeleton.** Backend del estado de Terraform, Terraform de `shared` y `devsvc`, agente de Semantic Kernel sin tools detrás de FastAPI, `docker compose`, OpenTelemetry y los workflows de CI/CD. El primer `prod-up` deja el agente vivo en Azure.
 - [ ] **Fase 2: tool de cálculo.** Lógica pura, tests unitarios y property-based, primer set de evaluación.
 - [ ] **Fase 3: tool de football-data.org.** Timeouts, reintentos, circuit breaker, caché con TTL en Cosmos DB, degradación elegante y tests de contrato.
 - [ ] **Fase 4: RAG del reglamento.** Ingesta como Container Apps Job, chunking por regla, búsqueda híbrida + semantic ranker, índice versionado con alias, evaluación de retrieval.
@@ -83,6 +85,7 @@ Después vienen la migración a Azure AI Foundry Agent Service (Versión 2) y la
 
 | Concepto | Costo aproximado |
 |---|---|
+| Estado de Terraform (Storage Account) | < 0,05 USD/mes |
 | Tokens de Azure OpenAI (local, CI y prod) | ~1–3 USD/mes |
 | Sesión de prod (AI Search Basic + private endpoints por hora, ACR por día) | ~0,80 USD por sesión de 4 horas |
 

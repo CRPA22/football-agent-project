@@ -16,7 +16,7 @@ Plan de implementación de la **Versión 1** del agente: orquestación propia co
 | Pruebas antes de prod | Local + gates de CI (tests + evaluaciones del agente) | Sustituyen al entorno dev |
 | Autenticación a Azure | **Managed Identity + RBAC** (`DefaultAzureCredential`) | Sin keys de Azure en código, en `.env` ni en GitHub |
 | Secretos | **Key Vault** (solo la API key de football-data.org) | El único secreto que no se puede eliminar |
-| IaC | **Bicep** + Azure Verified Modules | Nativo de Azure, módulos mantenidos por Microsoft |
+| IaC | **Terraform** (providers `azurerm` y `azuread`), estado remoto en Azure Storage | Estándar de la industria y multi-nube; `plan` preciso, `destroy` exacto y detección de drift (ver ADR 0004) |
 | CI/CD | **GitHub Actions + OIDC** | Federated credentials: sin secretos de Azure en GitHub |
 | Registro de imágenes | **ACR Basic efímero** (dentro de prod) | Se cobra por día que existe: solo se paga en los días de sesión |
 | Red de prod | VNet + private endpoints, acceso público deshabilitado en los backends | Práctica real de producción |
@@ -53,10 +53,10 @@ Plan de implementación de la **Versión 1** del agente: orquestación propia co
 ### Modelos de IA
 | Uso | Modelo |
 |---|---|
-| Chat / razonamiento | Modelo *mini* vigente de Azure OpenAI (p. ej. `gpt-4.1-mini`), con **versión fijada** |
-| Embeddings | `text-embedding-3-small` |
+| Chat | `gpt-4.1-mini`, versión `2025-04-14`, GlobalStandard (se retira el 2027-04-14: migración planificada) |
+| Embeddings | `text-embedding-3-small`, versión `1`, GlobalStandard |
 
-La disponibilidad de modelos varía por región: se valida antes de fijar la región (por defecto, `eastus`).
+Región `eastus`. Disponibilidad, cuota, precios y fechas de retiro verificados en el ADR 0003.
 
 ### Calidad y tooling
 | Herramienta | Uso |
@@ -74,7 +74,7 @@ La disponibilidad de modelos varía por región: se valida antes de fijar la reg
 ### Infraestructura y operación
 | Componente | Tecnología |
 |---|---|
-| IaC | Bicep, Azure Verified Modules, `bicep lint`, `az deployment what-if` |
+| IaC | Terraform (`fmt`, `validate`, `plan`, `apply`, `destroy`), `tflint`, estado en Azure Blob Storage con bloqueo por lease |
 | CI/CD | GitHub Actions, OIDC, `gh` CLI |
 | Contenedores | Docker (build multi-stage, `python:3.12-slim`) |
 | Observabilidad | OpenTelemetry → Application Insights / Log Analytics |
@@ -171,6 +171,9 @@ Cada paso emite spans de OpenTelemetry: latencia, tokens, tool elegida y errores
 ```mermaid
 flowchart TB
     subgraph sub["Suscripción de Azure"]
+        subgraph tfstate["rg-football-tfstate · permanente · céntimos al mes"]
+            st["Storage Account<br/>(estado de Terraform)"]
+        end
         subgraph shared["rg-football-shared · permanente · céntimos al mes"]
             kv["Key Vault"]
             log["Log Analytics + App Insights"]
@@ -194,13 +197,14 @@ flowchart TB
 
 | Resource group | Vida | Por qué existe |
 |---|---|---|
+| `rg-football-tfstate` | Permanente | Guarda el estado de Terraform. Lo crea un script de bootstrap (no Terraform), para que Terraform nunca gestione el recurso que contiene su propio estado |
 | `rg-football-shared` | Permanente | Lo que debe sobrevivir al teardown: el secreto, la telemetría histórica y las identidades (así los permisos RBAC en Key Vault son estables) |
 | `rg-football-devsvc` | Permanente | Azure OpenAI y AI Search no tienen emulador: los usan el desarrollo local y las evaluaciones de CI. No tiene cómputo, así que no cuesta nada en reposo |
 | `rg-football-prod` | Efímero | Todo lo que se cobra por hora o por día. Se crea con `prod-up` y se borra con `prod-down` |
 
 ### Convención de nombres
 
-Abreviaturas del Cloud Adoption Framework de Microsoft. Donde el nombre debe ser globalmente único, se agrega un sufijo corto (`uniqueString`).
+Abreviaturas del Cloud Adoption Framework de Microsoft. Donde el nombre debe ser globalmente único, se agrega un sufijo corto y determinista derivado del ID de la suscripción (siempre el mismo, para que `prod-up` recree los mismos nombres).
 
 | Recurso | Patrón | Ejemplo |
 |---|---|---|
@@ -212,11 +216,26 @@ Abreviaturas del Cloud Adoption Framework de Microsoft. Donde el nombre debe ser
 | Azure OpenAI | `oai-football-<capa>-<sufijo>` | `oai-football-prod-x7k2` |
 | AI Search | `srch-football-<capa>-<sufijo>` | `srch-football-prod-x7k2` |
 | Cosmos DB | `cosmos-football-<capa>-<sufijo>` | `cosmos-football-prod-x7k2` |
-| Storage | `stfootball<capa><sufijo>` | `stfootballprodx7k2` |
+| Storage | `stfootball<capa><sufijo>` | `stfootballprodx7k2`, `stfootballtfstatex7k2` |
 | Key Vault | `kv-football-<sufijo>` | `kv-football-x7k2` |
 | Managed Identity | `id-football-<uso>` | `id-football-app` |
 
-**Tags en todos los recursos:** `project=football-agent`, `layer=<shared|devsvc|prod>`, `managed-by=bicep`, `ephemeral=<true|false>`.
+**Tags en todos los recursos:** `project=football-agent`, `layer=<tfstate|shared|devsvc|prod>`, `managed-by=terraform` (o `bootstrap` en `rg-football-tfstate`), `ephemeral=<true|false>`.
+
+### Estado de Terraform
+
+Terraform guarda en un archivo de **estado** qué recursos creó y cómo están configurados. Diseño:
+
+| Aspecto | Decisión |
+|---|---|
+| Dónde | Contenedor `tfstate` de la Storage Account de `rg-football-tfstate` (backend `azurerm`) |
+| Un estado por capa | `shared.tfstate`, `devsvc.tfstate` y `prod.tfstate`: un error en prod no puede tocar `shared` (radio de impacto limitado) |
+| Autenticación | Entra ID (`use_azuread_auth`), **sin access keys**: el acceso por clave compartida de la Storage Account queda deshabilitado |
+| Bloqueo | Automático mediante *lease* del blob: dos `apply` simultáneos no pueden corromper el estado |
+| Recuperación | Versionado de blobs + soft-delete: se puede volver a una versión anterior del estado |
+| Secretos | El estado puede contener valores sensibles: nunca se sube al repo (`.gitignore`) y solo lo leen tu usuario y la identidad de CI |
+
+**Bootstrap (una sola vez):** `just bootstrap-tfstate` ejecuta un script (como el de los resource providers) que crea `rg-football-tfstate`, la Storage Account y el contenedor. A partir de ahí, todo lo demás lo crea Terraform.
 
 ---
 
@@ -250,7 +269,7 @@ flowchart LR
 - **Private DNS zones** enlazadas a la VNet, para que los nombres públicos (`*.openai.azure.com`…) resuelvan a IPs privadas.
 - **Backends de prod:** `publicNetworkAccess: Disabled`.
 - **Key Vault (`shared`):** acceso público con RBAC, para poder cargar el secreto una vez desde tu máquina. Prod lo lee por su private endpoint.
-- **Control plane vs. data plane:** Bicep (control plane, vía Azure Resource Manager) funciona desde GitHub Actions aunque todo sea privado. La ingesta (data plane) corre como un **job dentro de la VNet**.
+- **Control plane vs. data plane:** Terraform crea los recursos a través de Azure Resource Manager (control plane), y eso funciona desde GitHub Actions aunque todo sea privado. Lo que toca *datos* (el índice de AI Search, los documentos) corre como un **job dentro de la VNet**. Por eso Terraform no gestiona datos de los backends privados.
 
 ---
 
@@ -266,6 +285,7 @@ flowchart LR
 | | | Cognitive Services User | Content Safety |
 | | | AcrPull | ACR de prod |
 | `id-football-github` | User-assigned MI + federated credential (OIDC) | Contributor + Role Based Access Control Administrator (limitado a los roles de arriba) | Suscripción (para crear y borrar `rg-football-prod`) |
+| | | Storage Blob Data Contributor | Contenedor `tfstate` (leer y escribir el estado de Terraform) |
 | Tu usuario | Entra ID | Mismos roles de datos que la app | **Solo `devsvc`** y el Key Vault de `shared`. Sin acceso a los datos de prod |
 
 **Otras medidas de seguridad:**
@@ -312,7 +332,7 @@ flowchart LR
 flowchart TB
     dev["Rama corta + PR"] --> ci
     subgraph ci["ci.yml · en cada PR"]
-        c1["ruff + mypy"] --> c2["pytest"] --> c3["bicep lint + what-if"] --> c4["docker build"] --> c5["evaluaciones del agente<br/>(contra devsvc)"]
+        c1["ruff + mypy"] --> c2["pytest"] --> c3["terraform fmt + validate<br/>+ tflint + plan"] --> c4["docker build"] --> c5["evaluaciones del agente<br/>(contra devsvc)"]
     end
     ci -->|"todo en verde"| merge["Merge a master"]
     merge --> cd
@@ -329,10 +349,12 @@ flowchart TB
 
 | Workflow | Cuándo corre | Qué hace |
 |---|---|---|
-| `ci.yml` | En cada PR | Lint, tipos, tests, Bicep (lint + what-if), build de la imagen, evaluaciones del agente |
+| `ci.yml` | En cada PR | Lint, tipos, tests, Terraform (`fmt`, `validate`, `tflint` y `plan`, publicado como comentario del PR), build de la imagen, evaluaciones del agente |
 | `cd.yml` | Push a `master` | Si prod está encendido: build + push, canary, smoke tests, promoción o rollback |
-| `prod-up.yml` | Manual | Infraestructura de prod (Bicep) → ACR → build + push → Container App → ingesta → smoke tests |
-| `prod-down.yml` | Manual **y cada noche** (cron) | Borra `rg-football-prod` y purga los recursos con soft-delete |
+| `prod-up.yml` | Manual | `terraform apply` de prod → build + push al ACR → nueva revisión del Container App → ingesta → smoke tests |
+| `prod-down.yml` | Manual **y cada noche** (cron) | `terraform destroy` de prod. El provider purga los recursos con soft-delete al destruirlos |
+
+**Imagen del Container App:** Terraform crea el Container App con una imagen pública de ejemplo, porque el ACR recién creado está vacío, e ignora los cambios posteriores de imagen (`lifecycle { ignore_changes }`). Las imágenes reales las despliega el pipeline. Así Terraform gestiona la infraestructura y el pipeline gestiona las versiones de la aplicación, sin pisarse.
 
 **Protección de `master`:** sin push directo, solo PRs con CI en verde.
 
@@ -355,6 +377,7 @@ stateDiagram-v2
 ```
 just prod-up        # gh workflow run prod-up.yml + gh run watch
 just prod-status    # az group exists --name rg-football-prod
+just prod-plan      # terraform plan de prod (qué cambiaría, sin aplicar nada)
 just prod-down      # gh workflow run prod-down.yml + gh run watch
 ```
 
@@ -382,10 +405,12 @@ football-agent-project/
 │   ├── contract/               # Respuestas grabadas de football-data.org
 │   └── smoke/                  # Tests contra el despliegue
 ├── infra/
-│   ├── modules/                # Módulos Bicep reutilizables
-│   ├── shared/main.bicep
-│   ├── devsvc/main.bicep
-│   └── prod/main.bicep
+│   ├── modules/                # Módulos Terraform reutilizables
+│   └── stacks/                 # Un "root module" por capa, cada uno con su estado
+│       ├── shared/             # main.tf, variables.tf, outputs.tf, providers.tf, backend.tf
+│       ├── devsvc/
+│       └── prod/
+├── scripts/bootstrap/          # Registro de providers y creación del backend del estado
 ├── .github/workflows/          # ci, cd, prod-up, prod-down
 ├── docs/adr/                   # Architecture Decision Records
 ├── docker-compose.yml
@@ -401,7 +426,7 @@ La lógica de las tools (`tools/`) no depende de Semantic Kernel, así que en la
 
 ## 12. Fases
 
-### Fase 0: fundamentos
+### Fase 0: fundamentos ✅
 - `git init`, repositorio en GitHub y protección de `master`.
 - Estructura de carpetas, `pyproject.toml` con `uv`, ruff, mypy, pytest y pre-commit.
 - `justfile` con los comandos base.
@@ -409,12 +434,22 @@ La lógica de las tools (`tools/`) no depende de Semantic Kernel, así que en la
 - **Listo cuando:** `just check` (lint + tipos + tests) pasa en local y en un primer `ci.yml`.
 
 ### Fase 1: walking skeleton
-- **Bootstrap (una sola vez, a mano):** desplegar `shared` y `devsvc` con tu usuario, crear la federated credential de GitHub y cargar la API key en Key Vault. Es inevitable: la identidad de CI no puede crearse a sí misma.
-- Bicep de `prod` mínimo: Container Apps + ACR + Azure OpenAI (todavía sin red privada).
-- Agente de Semantic Kernel **sin tools** detrás de FastAPI (`/chat`, `/health/live`, `/health/ready`).
-- `Dockerfile`, `docker-compose.yml` y OpenTelemetry desde el primer commit.
-- Workflows `ci`, `cd`, `prod-up` y `prod-down` (incluido el cron nocturno).
-- Budget con alertas.
+
+| Paso | Qué |
+|---|---|
+| 1.1 ✅ | Preparar la suscripción: limpieza, resource providers (`just bootstrap-providers`), región y modelos (ADR 0003) |
+| 1.2 | Herramientas de Terraform (`terraform`, `tflint`, hook de `terraform fmt` en pre-commit) y **backend del estado** (`just bootstrap-tfstate`) |
+| 1.3 | Terraform de `shared`: Key Vault, Log Analytics, App Insights, identidades y **budget con alertas** |
+| 1.4 | Terraform de `devsvc`: Azure OpenAI (deployments de los dos modelos) + AI Search Free |
+| 1.5 | Cargar la API key de football-data.org en Key Vault y asignar tus permisos RBAC |
+| 1.6 | Agente mínimo con Semantic Kernel + FastAPI (`/chat`, `/health/live`, `/health/ready`), en local |
+| 1.7 | `Dockerfile`, `docker-compose.yml` y OpenTelemetry |
+| 1.8 | Conexión GitHub → Azure con OIDC (identidad y federated credential gestionadas con Terraform) |
+| 1.9 | Terraform de `prod` mínimo: Container Apps + ACR + Azure OpenAI (todavía sin red privada) |
+| 1.10 | Workflows `prod-up`, `prod-down` (con cron nocturno) y `cd`, y `terraform plan` en CI |
+| 1.11 | Primer `just prod-up` y `just prod-down` |
+
+- **Bootstrap inevitable:** el backend del estado y el primer `apply` de `shared` (que crea la identidad de CI) los ejecutas tú con tu usuario. La identidad de CI no puede crearse a sí misma.
 - **Listo cuando:** `just prod-up` deja un agente vivo en Azure con trazas en App Insights, y `just prod-down` lo borra por completo, sin secretos en el código ni en GitHub.
 
 ### Fase 2: tool de cálculo
@@ -471,6 +506,7 @@ Valores aproximados (USD, `eastus`, pago por uso). Verificar en la [Azure Pricin
 
 | Concepto | Tipo de cobro | Costo |
 |---|---|---|
+| `tfstate` (Storage Account con el estado de Terraform, unos KB) | Por uso | < 0,05 USD/mes |
 | `shared` (Key Vault, Log Analytics dentro de 5 GB gratis, identidades) | Por uso | Céntimos al mes |
 | `devsvc` (Azure OpenAI + AI Search Free) | Por uso (tokens) | ~1–3 USD/mes |
 | Prod: AI Search Basic | Por hora | ~0,10 USD/h |
@@ -490,7 +526,9 @@ Valores aproximados (USD, `eastus`, pago por uso). Verificar en la [Azure Pricin
 | Riesgo | Mitigación |
 |---|---|
 | Olvidar apagar prod | Cron nocturno de `prod-down` + alerta de budget |
-| Soft-delete bloquea recrear recursos con el mismo nombre | `prod-down` purga Azure OpenAI y Content Safety; Key Vault vive en `shared` y nunca se borra |
+| Soft-delete bloquea recrear recursos con el mismo nombre | El provider `azurerm` purga Azure OpenAI y Content Safety al destruirlos (bloque `features`); Key Vault vive en `shared` y nunca se borra |
+| Estado de Terraform corrupto o perdido | Versionado de blobs + soft-delete en la Storage Account del estado; bloqueo por lease contra `apply` simultáneos |
+| Cambios manuales en el portal (*drift*) | `terraform plan` los detecta; regla: ningún cambio a mano en recursos gestionados por Terraform |
 | Sin entorno dev, un bug llega a prod | Gates de CI (tests + evaluaciones), canary al 10 %, smoke tests, rollback automático |
 | Límite de 10 req/min de football-data.org | Caché con TTL + backoff ante `429` |
 | Cuota de Azure OpenAI insuficiente en la región | Validar la cuota antes de fijar la región; manejar `429` con reintentos |
@@ -501,13 +539,19 @@ Valores aproximados (USD, `eastus`, pago por uso). Verificar en la [Azure Pricin
 
 ---
 
-## 15. ADRs a escribir
+## 15. ADRs
 
-1. Python + Semantic Kernel para la Versión 1.
-2. Azure Container Apps en lugar de Azure Functions.
-3. Un solo entorno efímero (prod) con trunk-based development.
-4. Capas de resource groups: `shared`, `devsvc` y `prod`.
-5. ACR Basic efímero frente a permanente.
-6. Cosmos DB como historial y caché (en lugar de Redis).
-7. AI Search Free en `devsvc` y Basic en prod.
-8. APIM pospuesto.
+**Escritos:**
+- 0001: registrar las decisiones de arquitectura.
+- 0002: Azure Container Apps como host del agente.
+- 0003: región y modelos de Azure OpenAI.
+- 0004: Terraform como herramienta de IaC.
+
+**Pendientes** (se escriben en la fase en que se implementa cada decisión):
+- Python + Semantic Kernel para la Versión 1.
+- Un solo entorno efímero (prod) con trunk-based development.
+- Capas de resource groups: `tfstate`, `shared`, `devsvc` y `prod`.
+- ACR Basic efímero frente a permanente.
+- Cosmos DB como historial y caché (en lugar de Redis).
+- AI Search Free en `devsvc` y Basic en prod.
+- APIM pospuesto.
